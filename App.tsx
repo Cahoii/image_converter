@@ -1,104 +1,155 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import DropZone from './components/DropZone';
 import ConverterControls from './components/ConverterControls';
-import { ImageFormat, AiMetadata } from './types';
-import { convertImage, getExtensionFromMime } from './utils/imageUtils';
+import { ImageFormat, ImageItem } from './types';
+import { convertImage, getExtensionFromMime, getImageDimensions } from './utils/imageUtils';
 import { analyzeImage } from './services/geminiService';
-import { FileImage, X, Check, AlertCircle, Wand2 } from 'lucide-react';
+import { FileImage, X, Check, AlertCircle, Wand2, Loader2, Sparkles, Trash2 } from 'lucide-react';
 
 const App: React.FC = () => {
   // State
-  const [file, setFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [items, setItems] = useState<ImageItem[]>([]);
   const [targetFormat, setTargetFormat] = useState<ImageFormat>(ImageFormat.JPEG);
   const [quality, setQuality] = useState<number>(0.9);
   
-  // Status State
+  // Global Status State
   const [isConverting, setIsConverting] = useState(false);
-  const [aiData, setAiData] = useState<AiMetadata>({ loading: false });
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   
-  // Clean up object URLs to prevent memory leaks
+  // Clean up object URLs on unmount
   useEffect(() => {
     return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      items.forEach(item => URL.revokeObjectURL(item.previewUrl));
     };
-  }, [previewUrl]);
+  }, []); // Run once on unmount (or when items changed if we wanted to be granular, but batch cleanup is fine here)
 
-  const handleFileSelect = (selectedFile: File) => {
-    // Reset state for new file
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    
-    setFile(selectedFile);
-    setPreviewUrl(URL.createObjectURL(selectedFile));
-    setAiData({ loading: false }); // Reset AI data
-    
-    // Auto-select a different format if uploaded is the same as default
-    if (selectedFile.type === ImageFormat.JPEG) setTargetFormat(ImageFormat.PNG);
-    else setTargetFormat(ImageFormat.JPEG);
-  };
+  const handleFilesSelect = async (files: File[]) => {
+    const newItems: ImageItem[] = files.map(file => ({
+      id: Math.random().toString(36).substring(7),
+      file,
+      previewUrl: URL.createObjectURL(file),
+      aiData: { loading: false },
+      status: 'idle'
+    }));
 
-  const handleClear = () => {
-    setFile(null);
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPreviewUrl(null);
-    setAiData({ loading: false });
-  };
+    setItems(prev => [...prev, ...newItems]);
 
-  const handleAiAnalyze = async () => {
-    if (!file) return;
+    // Async fetch dimensions for new items
+    newItems.forEach(async (item) => {
+      try {
+        const dims = await getImageDimensions(item.file);
+        setItems(currentItems => 
+          currentItems.map(i => i.id === item.id ? { ...i, dimensions: dims } : i)
+        );
+      } catch (e) {
+        console.error("Could not get dimensions for", item.file.name);
+      }
+    });
 
-    setAiData({ ...aiData, loading: true, error: undefined });
-    try {
-      const result = await analyzeImage(file);
-      setAiData({
-        loading: false,
-        suggestedName: result.suggestedName,
-        description: result.description
-      });
-    } catch (error) {
-        let errorMsg = "Lỗi kết nối AI";
-        if (error instanceof Error) errorMsg = error.message;
-        setAiData({ loading: false, error: errorMsg });
+    // Auto-switch format suggestion if the first file matches target (UX enhancement)
+    if (files.length > 0 && files[0].type === targetFormat) {
+       // Only switch if user hasn't manually set it? For now, keep simple or remove auto-switch.
+       // Let's stick to default JPEG unless user changes.
     }
   };
 
-  const handleConvert = async () => {
-    if (!file) return;
+  const handleRemoveItem = (id: string) => {
+    setItems(prev => {
+        const itemToRemove = prev.find(i => i.id === id);
+        if (itemToRemove) URL.revokeObjectURL(itemToRemove.previewUrl);
+        return prev.filter(i => i.id !== id);
+    });
+  };
+
+  const handleClearAll = () => {
+    items.forEach(item => URL.revokeObjectURL(item.previewUrl));
+    setItems([]);
+  };
+
+  const handleAiAnalyzeAll = async () => {
+    if (items.length === 0) return;
+    setIsAnalyzing(true);
+
+    // Set loading state for all eligible items
+    setItems(prev => prev.map(item => 
+        item.aiData.suggestedName ? item : { ...item, aiData: { ...item.aiData, loading: true, error: undefined } }
+    ));
+
+    // Process in parallel
+    const promises = items.map(async (item) => {
+        // Skip if already has result
+        if (item.aiData.suggestedName) return;
+
+        try {
+            const result = await analyzeImage(item.file);
+            setItems(current => current.map(i => 
+                i.id === item.id 
+                ? { ...i, aiData: { loading: false, suggestedName: result.suggestedName, description: result.description } } 
+                : i
+            ));
+        } catch (error) {
+            let errorMsg = "Lỗi AI";
+            if (error instanceof Error) errorMsg = error.message;
+            setItems(current => current.map(i => 
+                i.id === item.id 
+                ? { ...i, aiData: { loading: false, error: errorMsg } } 
+                : i
+            ));
+        }
+    });
+
+    await Promise.all(promises);
+    setIsAnalyzing(false);
+  };
+
+  const handleConvertAll = async () => {
+    if (items.length === 0) return;
     setIsConverting(true);
 
-    try {
-      // 1. Convert Image
-      const blob = await convertImage(file, targetFormat, quality);
-      
-      // 2. Determine Filename
-      let filename = file.name.substring(0, file.name.lastIndexOf('.'));
-      if (aiData.suggestedName) {
-        filename = aiData.suggestedName;
-      }
-      const extension = getExtensionFromMime(targetFormat);
-      const fullFilename = `${filename}.${extension}`;
+    for (const item of items) {
+        // Update item status
+        setItems(prev => prev.map(i => i.id === item.id ? { ...i, status: 'converting' } : i));
 
-      // 3. Download
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fullFilename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+        try {
+            // 1. Convert
+            const blob = await convertImage(item.file, targetFormat, quality);
+            
+            // 2. Name
+            let filename = item.file.name.substring(0, item.file.name.lastIndexOf('.'));
+            if (item.aiData.suggestedName) {
+                filename = item.aiData.suggestedName;
+            }
+            const extension = getExtensionFromMime(targetFormat);
+            const fullFilename = `${filename}.${extension}`;
 
-    } catch (error) {
-      alert('Có lỗi xảy ra khi chuyển đổi ảnh.');
-      console.error(error);
-    } finally {
-      setIsConverting(false);
+            // 3. Download
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fullFilename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+
+            // Success state
+            setItems(prev => prev.map(i => i.id === item.id ? { ...i, status: 'success' } : i));
+            
+            // Small delay to prevent browser from blocking multiple downloads
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+        } catch (error) {
+            console.error(error);
+            setItems(prev => prev.map(i => i.id === item.id ? { ...i, status: 'error' } : i));
+        }
     }
+    
+    setIsConverting(false);
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 to-blue-100 py-10 px-4">
-      <div className="max-w-5xl mx-auto">
+      <div className="max-w-6xl mx-auto">
         
         {/* Header */}
         <header className="mb-10 text-center">
@@ -109,20 +160,20 @@ const App: React.FC = () => {
             <h1 className="text-2xl font-bold text-gray-900 tracking-tight">AI Image Converter</h1>
           </div>
           <p className="text-gray-600 max-w-lg mx-auto">
-            Chuyển đổi định dạng ảnh nhanh chóng, riêng tư ngay trên trình duyệt. Tích hợp AI để tối ưu tên file và tạo mô tả.
+            Chuyển đổi hàng loạt ảnh nhanh chóng. Tích hợp AI để tối ưu tên file và tạo mô tả tự động.
           </p>
         </header>
 
         {/* Main Content */}
-        {!file ? (
+        {items.length === 0 ? (
           <div className="max-w-2xl mx-auto bg-white p-8 rounded-3xl shadow-xl border border-white/50 backdrop-blur-sm">
-            <DropZone onFileSelect={handleFileSelect} />
+            <DropZone onFilesSelect={handleFilesSelect} />
             
             <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
                {[
-                 { title: 'Riêng tư tuyệt đối', desc: 'Xử lý trực tiếp trên trình duyệt, không gửi ảnh đi đâu (trừ khi dùng AI).' },
-                 { title: 'Tốc độ cực nhanh', desc: 'Không cần chờ upload/download server.' },
-                 { title: 'Hỗ trợ Gemini', desc: 'Sử dụng Google Gemini 2.5 Flash để phân tích nội dung.' }
+                 { title: 'Xử lý hàng loạt', desc: 'Tải lên nhiều ảnh và chuyển đổi cùng lúc.' },
+                 { title: 'Tốc độ cực nhanh', desc: 'Xử lý trực tiếp trên trình duyệt.' },
+                 { title: 'Hỗ trợ Gemini', desc: 'Phân tích nội dung hàng loạt ảnh.' }
                ].map((item, i) => (
                  <div key={i} className="p-4 bg-gray-50 rounded-xl text-center">
                     <h3 className="font-semibold text-gray-800 mb-1">{item.title}</h3>
@@ -132,98 +183,116 @@ const App: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
             
-            {/* Left Column: Image Preview */}
-            <div className="lg:col-span-2 space-y-6">
-              
-              <div className="bg-white rounded-3xl shadow-lg overflow-hidden border border-gray-100 relative group">
-                <div className="absolute top-4 right-4 z-10">
-                   <button 
-                     onClick={handleClear}
-                     className="bg-black/50 hover:bg-red-500 text-white p-2 rounded-full backdrop-blur-md transition-all"
-                     title="Xóa ảnh"
-                   >
-                     <X size={20} />
-                   </button>
-                </div>
+            {/* Left Column: Image List */}
+            <div className="lg:col-span-2 space-y-4">
+               {/* Add More Dropzone */}
+               <div className="bg-white rounded-2xl p-4 shadow-sm border border-dashed border-gray-300 hover:border-primary transition-colors">
+                  <DropZone onFilesSelect={handleFilesSelect} />
+               </div>
 
-                <div className="p-1 bg-gray-100 aspect-video flex items-center justify-center relative bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]">
-                   {previewUrl && (
-                     <img 
-                       src={previewUrl} 
-                       alt="Preview" 
-                       className="max-h-full max-w-full object-contain shadow-sm rounded-lg" 
-                     />
-                   )}
-                </div>
+               {/* Items List */}
+               {items.map((item) => (
+                  <div key={item.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 flex gap-4 transition-all hover:shadow-md relative overflow-hidden">
+                    {/* Status Bar */}
+                    {item.status === 'success' && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-green-500"></div>}
+                    {item.status === 'error' && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-500"></div>}
+                    {item.status === 'converting' && <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-blue-500 animate-pulse"></div>}
 
-                <div className="p-5 border-t border-gray-100 flex items-center justify-between">
-                   <div className="flex items-center gap-3">
-                      <div className="p-2 bg-indigo-50 text-primary rounded-lg">
-                        <FileImage size={24} />
-                      </div>
-                      <div>
-                        <p className="font-semibold text-gray-800 truncate max-w-[200px]">{file.name}</p>
-                        <p className="text-sm text-gray-500">
-                          {(file.size / 1024 / 1024).toFixed(2)} MB • {file.type.split('/')[1].toUpperCase()}
-                        </p>
-                      </div>
-                   </div>
-                </div>
-              </div>
-
-              {/* AI Analysis Result Panel */}
-              {(aiData.suggestedName || aiData.description || aiData.error) && (
-                <div className={`rounded-2xl p-5 border ${aiData.error ? 'bg-red-50 border-red-200' : 'bg-white border-green-200 shadow-sm'}`}>
-                  {aiData.error ? (
-                    <div className="flex items-start gap-3 text-red-700">
-                      <AlertCircle className="mt-0.5 flex-shrink-0" size={20} />
-                      <div>
-                        <h4 className="font-semibold">Lỗi AI</h4>
-                        <p className="text-sm">{aiData.error}</p>
-                      </div>
+                    {/* Preview Image */}
+                    <div className="w-24 h-24 sm:w-32 sm:h-32 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative border border-gray-200">
+                        <img 
+                           src={item.previewUrl} 
+                           alt={item.file.name}
+                           className="w-full h-full object-cover"
+                        />
                     </div>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 text-green-700 mb-2">
-                        <Check size={20} className="p-0.5 bg-green-200 rounded-full" />
-                        <h3 className="font-bold">Kết quả phân tích AI</h3>
-                      </div>
-                      
-                      <div className="grid gap-4 md:grid-cols-2">
-                         <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
-                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1">Tên file đề xuất</span>
-                            <code className="text-primary font-mono font-medium block break-all">
-                              {aiData.suggestedName}.{getExtensionFromMime(targetFormat)}
-                            </code>
-                         </div>
-                         <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
-                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1">Mô tả nội dung</span>
-                            <p className="text-sm text-gray-700 leading-relaxed">
-                              {aiData.description}
-                            </p>
-                         </div>
-                      </div>
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0 flex flex-col justify-center">
+                        <div className="flex justify-between items-start">
+                            <div>
+                                <h3 className="font-bold text-gray-800 truncate pr-2 max-w-[200px] sm:max-w-xs" title={item.file.name}>
+                                    {item.file.name}
+                                </h3>
+                                <p className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                                    <span className="bg-gray-100 px-1.5 py-0.5 rounded text-gray-600 font-medium">
+                                        {item.file.type.split('/')[1].toUpperCase()}
+                                    </span>
+                                    <span>{(item.file.size / 1024 / 1024).toFixed(2)} MB</span>
+                                    {item.dimensions && (
+                                        <span>• {item.dimensions.width} x {item.dimensions.height}</span>
+                                    )}
+                                </p>
+                            </div>
+                            <button 
+                                onClick={() => handleRemoveItem(item.id)}
+                                className="text-gray-400 hover:text-red-500 p-1 rounded-full hover:bg-red-50 transition-colors"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+
+                        {/* AI Results Section */}
+                        {(item.aiData.loading || item.aiData.suggestedName || item.aiData.error) && (
+                            <div className="mt-3 p-2.5 bg-gray-50 rounded-lg border border-gray-100">
+                                {item.aiData.loading ? (
+                                    <div className="flex items-center gap-2 text-primary text-xs font-medium">
+                                        <Loader2 size={12} className="animate-spin" />
+                                        Đang phân tích AI...
+                                    </div>
+                                ) : item.aiData.error ? (
+                                    <div className="flex items-center gap-2 text-red-600 text-xs">
+                                        <AlertCircle size={12} />
+                                        {item.aiData.error}
+                                    </div>
+                                ) : (
+                                    <div className="space-y-1">
+                                        <div className="flex items-center gap-1.5">
+                                            <Sparkles size={12} className="text-purple-600" />
+                                            <span className="text-xs font-bold text-gray-700">Tên mới:</span>
+                                            <code className="text-xs bg-white px-1.5 py-0.5 rounded border border-gray-200 text-primary font-mono">
+                                                {item.aiData.suggestedName}.{getExtensionFromMime(targetFormat)}
+                                            </code>
+                                        </div>
+                                        {item.aiData.description && (
+                                            <p className="text-xs text-gray-600 line-clamp-1 pl-4.5 border-l-2 border-purple-200 ml-1">
+                                                {item.aiData.description}
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* Conversion Status */}
+                        {item.status !== 'idle' && (
+                             <div className="mt-2 flex items-center gap-2">
+                                {item.status === 'converting' && <span className="text-xs text-blue-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin"/> Đang xử lý...</span>}
+                                {item.status === 'success' && <span className="text-xs text-green-600 flex items-center gap-1"><Check size={12}/> Đã tải xuống</span>}
+                                {item.status === 'error' && <span className="text-xs text-red-600">Lỗi chuyển đổi</span>}
+                             </div>
+                        )}
                     </div>
-                  )}
-                </div>
-              )}
+                  </div>
+               ))}
             </div>
 
-            {/* Right Column: Controls */}
+            {/* Right Column: Controls (Sticky) */}
             <div className="lg:col-span-1">
               <div className="sticky top-6">
                 <ConverterControls
                   format={targetFormat}
                   quality={quality}
                   isConverting={isConverting}
-                  aiMetadataLoading={aiData.loading}
+                  isAnalyzing={isAnalyzing}
+                  count={items.length}
                   onFormatChange={setTargetFormat}
                   onQualityChange={setQuality}
-                  onConvert={handleConvert}
-                  onAiAnalyze={handleAiAnalyze}
-                  hasAiResult={!!aiData.suggestedName}
+                  onConvertAll={handleConvertAll}
+                  onAiAnalyzeAll={handleAiAnalyzeAll}
+                  onClearAll={handleClearAll}
                 />
               </div>
             </div>

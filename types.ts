@@ -12,15 +12,18 @@ export interface ConvertedImage {
   format: ImageFormat;
 }
 
-export interface ImageState {
-  file: File | null;
-  previewUrl: string | null;
-  originalDimensions: { width: number; height: number } | null;
-}
-
 export interface AiMetadata {
   suggestedName?: string;
   description?: string;
   loading: boolean;
   error?: string;
+}
+
+export interface ImageItem {
+  id: string;
+  file: File;
+  previewUrl: string;
+  dimensions?: { width: number; height: number };
+  aiData: AiMetadata;
+  status: 'idle' | 'converting' | 'success' | 'error';
 }

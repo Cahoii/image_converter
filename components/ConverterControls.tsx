@@ -1,35 +1,42 @@
 import React from 'react';
 import { ImageFormat } from '../types';
-import { Settings, Sparkles, Download, Loader2 } from 'lucide-react';
+import { Settings, Sparkles, Download, Loader2, Trash2 } from 'lucide-react';
 
 interface ConverterControlsProps {
   format: ImageFormat;
   quality: number;
   isConverting: boolean;
-  aiMetadataLoading: boolean;
+  isAnalyzing: boolean;
+  count: number;
   onFormatChange: (format: ImageFormat) => void;
   onQualityChange: (quality: number) => void;
-  onConvert: () => void;
-  onAiAnalyze: () => void;
-  hasAiResult: boolean;
+  onConvertAll: () => void;
+  onAiAnalyzeAll: () => void;
+  onClearAll: () => void;
 }
 
 const ConverterControls: React.FC<ConverterControlsProps> = ({
   format,
   quality,
   isConverting,
-  aiMetadataLoading,
+  isAnalyzing,
+  count,
   onFormatChange,
   onQualityChange,
-  onConvert,
-  onAiAnalyze,
-  hasAiResult
+  onConvertAll,
+  onAiAnalyzeAll,
+  onClearAll
 }) => {
   return (
     <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-100">
-      <div className="flex items-center gap-2 mb-6 text-gray-800">
-        <Settings size={20} className="text-primary" />
-        <h2 className="text-xl font-bold">Cấu hình</h2>
+      <div className="flex items-center justify-between mb-6 text-gray-800">
+        <div className="flex items-center gap-2">
+            <Settings size={20} className="text-primary" />
+            <h2 className="text-xl font-bold">Cấu hình</h2>
+        </div>
+        <span className="text-xs font-semibold bg-gray-100 px-2 py-1 rounded-md text-gray-600">
+            {count} ảnh
+        </span>
       </div>
 
       <div className="space-y-6">
@@ -82,43 +89,35 @@ const ConverterControls: React.FC<ConverterControlsProps> = ({
         <div className="pt-2 border-t border-gray-100">
             <label className="block text-sm font-medium text-gray-700 mb-2">Tính năng AI (Gemini)</label>
             <button
-                onClick={onAiAnalyze}
-                disabled={aiMetadataLoading || hasAiResult}
+                onClick={onAiAnalyzeAll}
+                disabled={isAnalyzing || isConverting || count === 0}
                 className={`
                     w-full py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-medium transition-all
-                    ${hasAiResult 
-                        ? 'bg-green-100 text-green-700 cursor-default' 
-                        : 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white hover:from-purple-600 hover:to-indigo-700 shadow-md hover:shadow-lg'
-                    }
-                    disabled:opacity-70 disabled:cursor-not-allowed
+                    bg-gradient-to-r from-purple-500 to-indigo-600 text-white hover:from-purple-600 hover:to-indigo-700 shadow-md hover:shadow-lg
+                    disabled:opacity-70 disabled:cursor-not-allowed disabled:shadow-none
                 `}
             >
-                {aiMetadataLoading ? (
+                {isAnalyzing ? (
                     <>
                         <Loader2 className="animate-spin" size={16} />
                         Đang phân tích...
                     </>
-                ) : hasAiResult ? (
-                    <>
-                        <Sparkles size={16} />
-                        Đã phân tích xong
-                    </>
                 ) : (
                     <>
                         <Sparkles size={16} />
-                        Tự động đặt tên & Mô tả
+                        Phân tích tất cả ({count})
                     </>
                 )}
             </button>
             <p className="text-xs text-gray-500 mt-2">
-                Sử dụng AI để nhận diện nội dung ảnh và đề xuất tên file chuẩn SEO.
+                Tự động đặt tên file chuẩn SEO và tạo mô tả cho toàn bộ danh sách.
             </p>
         </div>
 
         {/* Convert Action */}
         <button
-          onClick={onConvert}
-          disabled={isConverting}
+          onClick={onConvertAll}
+          disabled={isConverting || isAnalyzing || count === 0}
           className="w-full py-3.5 px-4 bg-gray-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-black transition-all shadow-lg hover:shadow-xl active:scale-95 disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           {isConverting ? (
@@ -126,7 +125,17 @@ const ConverterControls: React.FC<ConverterControlsProps> = ({
           ) : (
             <Download size={20} />
           )}
-          {isConverting ? 'Đang xử lý...' : 'Chuyển đổi & Tải xuống'}
+          {isConverting ? 'Đang xử lý...' : 'Chuyển đổi & Tải xuống tất cả'}
+        </button>
+        
+        {/* Clear Action */}
+        <button
+            onClick={onClearAll}
+            disabled={isConverting || count === 0}
+            className="w-full py-2 px-4 text-red-600 bg-red-50 hover:bg-red-100 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors"
+        >
+            <Trash2 size={16} />
+            Xóa tất cả
         </button>
       </div>
     </div>
